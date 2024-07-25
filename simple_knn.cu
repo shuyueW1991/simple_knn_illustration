@@ -27,14 +27,18 @@
 // Histogramming: Counting occurrences of elements in an array.
 
 #include <cub/device/device_radix_sort.cuh>
+// radix sorting algorithm is deployed to sort Morton code.
 #include <vector>
 #include <cuda_runtime_api.h>
 #include <thrust/device_vector.h>
+// thrust::device_vector thing...
 #include <thrust/sequence.h>
+// providing indice for avector
 #define __CUDACC__
+// #define __CUDACC__ is a preprocessor macro specifically defined within the CUDA environment. It serves as a flag to indicate that the code is being compiled by the NVIDIA CUDA compiler (nvcc).
+
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
-
 namespace cg = cooperative_groups;
 // The cooperative_groups namespace in CUDA C++ provides a set of utilities for managing 
 // and synchronizing groups of threads within a thread block. 
@@ -134,6 +138,9 @@ __global__ void boxMinMax(uint32_t P, float3* points, uint32_t* indices, MinMax*
 		me.minn = { FLT_MAX, FLT_MAX, FLT_MAX };
 		me.maxx = { -FLT_MAX,-FLT_MAX,-FLT_MAX };
 	}
+	// It is not just a redundant way of initizliation by using indices vector. 
+	//Matter of fact, the real comparison is done immediately in below... but the thing is, the boxes needs to register the `me` thing in a box. 
+	// The box means nothing UNLESS the data is sorted morton codes, which has spatial significance if you think about it: with that, the closer codes corresponds to nearer postion in original data....
 
 	__shared__ MinMax redResult[BOX_SIZE];
 
@@ -160,7 +167,9 @@ __global__ void boxMinMax(uint32_t P, float3* points, uint32_t* indices, MinMax*
 	if (threadIdx.x == 0)
 		boxes[blockIdx.x] = me;
 	//  writing the final reduced MinMax value for each block to the output array boxes.
-	// since the min- max- thing within the lock is now at the first thread of the blcok.
+	// since the min- max- thing within the block, the min-max-est thing is now at the first thread of the blcok.
+	// technically, the box corresponds to a grid, in the lingo of CUDA programming.
+	// Thus, each box element in the box vector registers the `me` thing of this box/grid.
 }
 
 __device__ __host__ float distBoxPoint(const MinMax& box, const float3& p)
@@ -177,6 +186,7 @@ __device__ __host__ float distBoxPoint(const MinMax& box, const float3& p)
 
 template<int K>
 __device__ void updateKBest(const float3& ref, const float3& point, float* knn)
+// The function efficiently maintains the K smallest distances without sorting the entire list at each update.
 {
 	float3 d = { point.x - ref.x, point.y - ref.y, point.z - ref.z };
 	float dist = d.x * d.x + d.y * d.y + d.z * d.z;
@@ -198,7 +208,7 @@ __global__ void boxMeanDist(uint32_t P, float3* points, uint32_t* indices, MinMa
 		return;
 
 	float3 point = points[indices[idx]];
-	float best[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
+	float best[3] = { FLT_MAX, FLT_MAX, FLT_MAX }; // the `best` variable belongs to a thread now.
 
 	for (int i = max(0, idx - 3); i <= min(P - 1, idx + 3); i++)
 	{
@@ -206,6 +216,7 @@ __global__ void boxMeanDist(uint32_t P, float3* points, uint32_t* indices, MinMa
 			continue;
 		updateKBest<3>(point, points[indices[i]], best);
 	}
+	// now we have found the top 3 minimum distances, among the 3 + 3 distances within neighbouring grids.
 
 	float reject = best[2];
 	best[0] = FLT_MAX;
@@ -215,7 +226,7 @@ __global__ void boxMeanDist(uint32_t P, float3* points, uint32_t* indices, MinMa
 	for (int b = 0; b < (P + BOX_SIZE - 1) / BOX_SIZE; b++)
 	{
 		MinMax box = boxes[b];
-		float dist = distBoxPoint(box, point);
+		float dist = distBoxPoint(box, point); // get the distance to each box from the current point.
 		if (dist > reject || dist > best[2])
 			continue;
 
@@ -223,7 +234,7 @@ __global__ void boxMeanDist(uint32_t P, float3* points, uint32_t* indices, MinMa
 		{
 			if (i == idx)
 				continue;
-			updateKBest<3>(point, points[indices[i]], best);
+			updateKBest<3>(point, points[indices[i]], best); // search the 'better' distance within potential 'good' box.
 		}
 	}
 	dists[indices[idx]] = (best[0] + best[1] + best[2]) / 3.0f;
@@ -236,6 +247,7 @@ void SimpleKNN::knn(int P, float3* points, float* meanDists)
 	size_t temp_storage_bytes;
 
 	float3 init = { 0, 0, 0 }, minn, maxx;
+
 
 	// The subsequent 3 lines demonstrate a two-step approach to perform a reduction using cub::DeviceReduce::Reduce with a custom CustomMin operator.
 	cub::DeviceReduce::Reduce(nullptr, temp_storage_bytes, points, result, P, CustomMin(), init);
@@ -251,6 +263,7 @@ void SimpleKNN::knn(int P, float3* points, float* meanDists)
 	// Only when a non-null pointer to temporary storage is provided in the first argument does the specified reduction operator come into play. 
 	cudaMemcpy(&minn, result, sizeof(float3), cudaMemcpyDeviceToHost);
 	//copy the data from device to host.
+
 	cub::DeviceReduce::Reduce(temp_storage.data().get(), temp_storage_bytes, points, result, P, CustomMax(), init);
 	// similar with CustomMin thing above, so no need to create temporary storage again.
 	cudaMemcpy(&maxx, result, sizeof(float3), cudaMemcpyDeviceToHost);
@@ -260,7 +273,9 @@ void SimpleKNN::knn(int P, float3* points, float* meanDists)
 	// Creates a Thrust device vector named morton that can hold `P` elements of type uint32_t. 
 	// This vector is used to store Morton codes generated from a set of points.
 	thrust::device_vector<uint32_t> morton_sorted(P);
-	coord2Morton << <(P + 255) / 256, 256 >> > (P, points, minn, maxx, morton.data().get());
+	// Creates a Thrust device vector named morton_sorted that can hold `P` elements of type uint32_t. 
+	// This vector is used to store morton_sorted codes that is the radix-sorted Morton codes.	
+	coord2Morton << <(P + 255) / 256, 256 >> > (P, points, minn, maxx, morton.data().get()); // the (P + 256 -1) assures that the block number in a grid is surely at least 1, and the minus one is due to the beginning of a sequence in C/CUDA/C++ is 0.
 	// morton.data().get(): This retrieves a pointer to the underlying data storage of the morton device vector.
 	// <<block number in a grid, block thd number>>
 
@@ -274,17 +289,12 @@ void SimpleKNN::knn(int P, float3* points, float* meanDists)
 	// copy the above two-step reduction aproach.
 	cub::DeviceRadixSort::SortPairs(nullptr, temp_storage_bytes, morton.data().get(), morton_sorted.data().get(), indices.data().get(), indices_sorted.data().get(), P);
 	// This line effectively sorts the Morton codes stored in the morton vector along with their corresponding indices from the indices vector. 
+	// The primary target of the radix sort in this specific code is the morton vector of Morton codes, which are essentially interleaved bit representations of 3D coordinates.
 	// The sorted results are placed in the morton_sorted and indices_sorted vectors, respectively.
 	temp_storage.resize(temp_storage_bytes);
 	cub::DeviceRadixSort::SortPairs(temp_storage.data().get(), temp_storage_bytes, morton.data().get(), morton_sorted.data().get(), indices.data().get(), indices_sorted.data().get(), P);
-	// This modification of replacment with `temp_storage.data().get()` is crucial because radix sort often needs additional working memory during the sorting process. 
-	// By providing a dedicated buffer (temp_storage), the code avoids relying on on-device scratchpad memory, which can be limited.
-
-	// The primary target of the radix sort in this specific code is the morton vector. 
-	// This vector contains Morton codes, which are essentially interleaved bit representations of 3D coordinates.
 	// By sorting Morton codes, we effectively order the corresponding points in a space-filling curve, 
-	// which can significantly improve the performance of various spatial operations.
-	// For example, it helps locate the closest point to a given query point is more efficient.
+	// which helps locate the closest point to a given query point.
 
 
 	uint32_t num_boxes = (P + BOX_SIZE - 1) / BOX_SIZE;

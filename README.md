@@ -1,21 +1,39 @@
 # Illustration of simple knn algorithm via CUDA C
-## Scenario
-- used in [vanilla 3dgs](https://github.com/graphdeco-inria/gaussian-splatting.git)
-- the calling form is:
-    ```
-    from simple_knn._C import distCUDA2
-    ...
-    distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda())
-    ```
+The algorithm is quite rudimentary with respect to k nearest neighbours (knn). 
+The code snippet is in [vanilla 3dgs](https://github.com/graphdeco-inria/gaussian-splatting.git) and many other 3dgs-based repositories e.g. the masterpiece of [SegAnyGAussians](https://github.com/Jumpat/SegAnyGAussians.git)
+In its applicaton in 3d gaussian splatting, for each point in a vector, a gaussian is created whose scale is based up on its information in terms of distance to its neighbours:
+i.e.the average distance of itself and its top three nearest neighbours.
+The algorithm is essentially quite convenient for its adaptation to the deploy of GPU computing.
 
-- Detailed linewise illustration is finished via code anotation.
+The calling from main fucntion in typical 3dgs repo  is like this:
+
+```python
+from simple_knn._C import distCUDA2
+```
+...
+```python
+distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda())
+```
+
+The result is a vector of length equivalent to the number of points, where each elements is the average distance of itself and its three shortest distance.
+There is also independent repo [simple-knn](https://github.com/camenduru/simple-knn.git) which I don't have time to check its relation with the one used in 3dgs.
 
 
-# architecture
+
+This repository is created for those who:
+-  wants to know what CUDA programming looks like;
+-  is curious about the realization in the background of GPU deployment;
+-  would like to have detailed picture of the point cloud  manipulation in 3d gaussian splatting.
+
+
+
+Therefore, I humbly offer the annotation to the simple_knn algorithm with **Detailed linewise illustration is finished via code annotation, especially in <simple_knn.cu>.**
+
+The following is brief introduction of each file.
 
 ## setup.py
 This file contains metadata about your project, such as the name, version, author, dependencies, etc. 
-It's used by pip to install the package.
+It's used by `pip` to install the package.
 
 - ext_modules:
 This argument specifies a list of setuptools.
@@ -38,11 +56,11 @@ The C++ compiler automatically includes header files based on the #include direc
 
 
 ## ext.cpp
-expose the cpp function to python.
+It exposes the cpp function to python.
 
 ## spatial.h & spatial.cu
-declaration and definition of `distCUDA2`.
+Declaration and definition of `distCUDA2`.
 
 ## simple_knn.h & simple_knn.cu
 spatial.h & spatial.cu imports things in simple_knn.h & simple_knn.cu.
-spatial.cu is the core of the repo.
+spatial.cu is the brains of the repo.
